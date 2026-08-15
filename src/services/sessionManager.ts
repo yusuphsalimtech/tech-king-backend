@@ -148,17 +148,33 @@ async function handleConnectionUpdate(sessionId: string, update: any, sock: WASo
 
   if (update.connection === 'close') {
     const statusCode = (update.lastDisconnect?.error as any)?.output?.statusCode;
-    const loggedOut = statusCode === DisconnectReason.loggedOut;
+    const loggedOut = statusCode === DisconnectReason.loggedOut || statusCode === 401;
     const rt = runtime.get(sessionId);
     if (rt) {
       rt.sock = null;
       rt.state = 'close';
     }
+    logger.warn(
+      { sessionId, statusCode, reason: (update.lastDisconnect?.error as any)?.message },
+      'socket closed — disconnect details'
+    );
 
     if (loggedOut) {
-      await query(`UPDATE sessions SET status = 'disconnected', phone = NULL, updated_at = now() WHERE id = $1`, [sessionId]);
+      await query(`UPDATE sessions SET status = 'disconnected', phone = NULL, pairing_code = NULL, updated_at = now() WHERE id = $1`, [sessionId]);
       emit('session.disconnected', { sessionId, reason: 'logged_out' });
-      logger.info({ sessionId }, 'session logged out');
+      // Remove invalid session creds so the NEXT start is a clean QR/pairing
+      // flow (mirrors Shimba bot) — otherwise every restart reloads the dead
+      // session and dies with 401 again.
+      try {
+        const dir = path.join(sessionsDir, sessionId);
+        if (fs.existsSync(dir)) {
+          fs.rmSync(dir, { recursive: true, force: true });
+          logger.warn({ sessionId }, 'logged out — removed invalid session creds for fresh pairing');
+        }
+      } catch (e) {
+        logger.warn({ sessionId, err: (e as Error).message }, 'could not remove session creds');
+      }
+      logger.info({ sessionId, statusCode }, 'session logged out');
       return;
     }
 
