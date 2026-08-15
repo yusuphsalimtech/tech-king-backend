@@ -285,9 +285,10 @@ export async function startSession(sessionId: string): Promise<void> {
   const sock = makeWASocket({
     version,
     auth: state,
-    logger: pino({ level: 'silent' }),
+    logger: pino({ level: 'warn' }),
     browser: ['Tech King', 'Chrome', '1.0.0'],
-    markOnlineOnConnect: true,
+    printQRInTerminal: false,
+    markOnlineOnConnect: false,
     syncFullHistory: false,
   });
   rt.sock = sock;
@@ -302,16 +303,40 @@ export async function startSession(sessionId: string): Promise<void> {
   logger.info({ sessionId }, 'session started');
 }
 
+/**
+ * Wait for the Baileys socket to be ready before requesting a pairing code.
+ * Mirrors the Shimba bot: waits up to 15s, restarts the socket once if it
+ * dies mid-wait (stale session), so "not ready" only surfaces after a timeout.
+ */
+async function waitForSocketReady(sessionId: string, maxMs = 15000): Promise<boolean> {
+  const startedAt = Date.now();
+  let restarted = false;
+  while (Date.now() - startedAt < maxMs) {
+    const rt = runtime.get(sessionId);
+    if (!rt?.sock && !restarted) {
+      restarted = true;
+      logger.warn({ sessionId }, 'socket gone during pairing wait — restarting session');
+      await startSession(sessionId).catch(() => undefined);
+    }
+    if (runtime.get(sessionId)?.sock) return true;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return Boolean(runtime.get(sessionId)?.sock);
+}
+
 export async function requestPairingCode(sessionId: string, rawPhone: string): Promise<string> {
   const s = await getSession(sessionId);
   if (!s) throw new Error('Session not found');
 
-  await startSession(sessionId);
-  const rt = runtime.get(sessionId);
-  if (!rt?.sock) throw new Error('Session socket not ready yet, try again in a moment');
-
   const phone = rawPhone.replace(/[^\d]/g, '');
   if (!/^\d{8,15}$/.test(phone)) throw new Error('Invalid phone number');
+
+  await startSession(sessionId);
+  const ready = await waitForSocketReady(sessionId, 15000);
+  const rt = runtime.get(sessionId);
+  if (!ready || !rt?.sock) {
+    throw new Error('Bot is not ready yet — wait for the socket to initialize, then try again');
+  }
 
   const code = await rt.sock.requestPairingCode(phone);
   await query(`UPDATE sessions SET status = 'pairing', phone = $1, pairing_code = $2, updated_at = now() WHERE id = $3`, [
