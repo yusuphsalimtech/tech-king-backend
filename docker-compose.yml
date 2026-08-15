@@ -1,0 +1,60 @@
+version: '3.8'
+
+# Tech King Automation — backend stack.
+# Runs ONLY on the VPS. Never start this on a machine running Shimba WiFi's stack.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: tech-king-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: techking
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME}
+      POSTGRES_DB: tech_king
+    volumes:
+      - tech-king-pgdata:/var/lib/postgresql/data
+    ports:
+      - '127.0.0.1:5433:5432' # different host port from any existing Postgres
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U techking']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: tech-king-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - tech-king-redisdata:/data
+    ports:
+      - '127.0.0.1:6380:6379' # different host port from any existing Redis
+
+  backend:
+    build: .
+    container_name: tech-king-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: postgres://techking:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/tech_king
+      REDIS_URL: redis://redis:6379/6
+      JWT_SECRET: ${JWT_SECRET:-CHANGE_ME}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      DATA_DIR: /app/data
+    volumes:
+      - tech-king-data:/app/data
+    ports:
+      - '127.0.0.1:4000:4000'
+
+volumes:
+  tech-king-pgdata:
+  tech-king-redisdata:
+  tech-king-data:
