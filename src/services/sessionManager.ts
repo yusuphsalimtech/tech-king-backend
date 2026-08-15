@@ -36,6 +36,7 @@ export interface SessionRecord {
 
 interface RuntimeSession {
   sock: WASocket | null;
+  state: string; // connecting | pairing | open | closing | close | undefined
   stopping: boolean;
 }
 
@@ -149,7 +150,10 @@ async function handleConnectionUpdate(sessionId: string, update: any, sock: WASo
     const statusCode = (update.lastDisconnect?.error as any)?.output?.statusCode;
     const loggedOut = statusCode === DisconnectReason.loggedOut;
     const rt = runtime.get(sessionId);
-    if (rt) rt.sock = null;
+    if (rt) {
+      rt.sock = null;
+      rt.state = 'close';
+    }
 
     if (loggedOut) {
       await query(`UPDATE sessions SET status = 'disconnected', phone = NULL, updated_at = now() WHERE id = $1`, [sessionId]);
@@ -276,7 +280,7 @@ export async function startSession(sessionId: string): Promise<void> {
   const existing = runtime.get(sessionId);
   if (existing?.sock) return; // already running
 
-  const rt: RuntimeSession = { sock: null, stopping: false };
+  const rt: RuntimeSession = { sock: null, state: 'connecting', stopping: false };
   runtime.set(sessionId, rt);
 
   const { version } = await fetchLatestBaileysVersion();
@@ -294,7 +298,10 @@ export async function startSession(sessionId: string): Promise<void> {
   rt.sock = sock;
 
   sock.ev.on('creds.update', () => void saveCreds().catch(() => undefined));
-  sock.ev.on('connection.update', (update) => void handleConnectionUpdate(sessionId, update, sock));
+  sock.ev.on('connection.update', (update) => {
+    if (update.connection) rt.state = update.connection;
+    void handleConnectionUpdate(sessionId, update, sock);
+  });
   sock.ev.on('messages.upsert', (upsert) => void handleMessagesUpsert(sessionId, upsert, sock));
 
   await query(`UPDATE sessions SET status = 'connecting', updated_at = now() WHERE id = $1`, [sessionId]);
@@ -317,8 +324,15 @@ async function waitForSocketReady(sessionId: string, maxMs = 15000): Promise<boo
       restarted = true;
       logger.warn({ sessionId }, 'socket gone during pairing wait — restarting session');
       await startSession(sessionId).catch(() => undefined);
+      continue;
     }
-    if (runtime.get(sessionId)?.sock) return true;
+    // Mirror the Shimba bot: only treat the socket as ready once Baileys has
+    // actually reached a usable state (connecting/qr/pairing/open) — not merely
+    // because the socket object exists. Otherwise requestPairingCode fires
+    // before the websocket is up and dies with "Connection Closed".
+    if (rt?.sock && rt.state && ['connecting', 'qr', 'pairing', 'open'].includes(rt.state)) {
+      return true;
+    }
     await new Promise((r) => setTimeout(r, 500));
   }
   return Boolean(runtime.get(sessionId)?.sock);
