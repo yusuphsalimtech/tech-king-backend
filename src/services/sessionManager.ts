@@ -98,20 +98,29 @@ async function createCredential(sessionId: string, phone: string, sock: WASocket
     `UPDATE sessions SET credential_hash = $1, credential_hint = $2, credential_expires_at = $3, updated_at = now() WHERE id = $4`,
     [sha256(credential), credential.slice(-4), expires, sessionId]
   );
-  // Send the credential to the paired WhatsApp number immediately (shown once only).
+  // Send the session message to the paired WhatsApp number immediately (shown once only).
   try {
     await sock.sendMessage(`${phone}@s.whatsapp.net`, {
       text:
-        `🔐 *${env.WA_BOT_NAME} — Session Credential*\n\n` +
-        `Your session is linked. Copy the credential below and paste it into the ` +
-        `"WhatsApp Session / Session ID" field on the Tech King dashboard.\n\n` +
-        `\`${credential}\`\n\n` +
-        `It expires in ${env.SESSION_CREDENTIAL_TTL_DAYS} days. Keep it secret — it grants access to this session.`,
+        `🌟 *TECH-KING SESSION* 🌟\n\n` +
+        `👋 *Hello Friend!*\n\n` +
+        `Just a minute we are generating your session ✅\n\n` +
+        `Loading... 10\n` +
+        `▬▬▬▬▬▬▬▬▬▬\n` +
+        `*SESSION CREDENTIAL*\n` +
+        `\`\`\`${credential}\`\`\`\n\n` +
+        `*Deploy your bot now*\n` +
+        `> ${env.FRONTEND_URL || 'https://automation.shimbawifi.xyz'}\n\n` +
+        `*How to deploy*\n` +
+        `> ${env.FRONTEND_URL || 'https://automation.shimbawifi.xyz'}/sessions\n` +
+        `▬▬▬▬▬▬▬▬▬▬\n\n` +
+        `_Expires in ${env.SESSION_CREDENTIAL_TTL_DAYS} days. Keep it secret — it grants access to this session._`,
     });
   } catch (err) {
     logger.error({ err: (err as Error).message, sessionId }, 'failed to send credential');
   }
-  emit('session.credential', { sessionId, phone, hint: credential.slice(-4) });
+  // Expose the credential once over the owner's realtime socket (shown once, then gone).
+  emit('session.credential', { sessionId, phone, hint: credential.slice(-4), credential });
   return credential;
 }
 
